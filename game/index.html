@@ -28,7 +28,7 @@
             display: flex;
             align-items: flex-end;
             justify-content: center;
-            gap: clamp(20px, 0.5vw, 10px);
+            gap: 0.8vw;
             position: absolute;
             bottom: 0;
             left: 0;
@@ -42,24 +42,26 @@
             display: inline-block;
             position: relative;
             /* background: white; */
-            width: clamp(80px, 10vw, 150px);
-            height: clamp(16px, 2vw, 30px);
+            width: 10vw;
+            height: 2vw;
             flex: 0 1 auto;
+            bottom: 1.5vw;
+            scale: 0.8;
         }
         #ui #damage-container .damage-meter .photo-container {
-            width: clamp(40px, 5vw, 75px);
-            height: clamp(40px, 5vw, 75px);
-            margin-left: max(-30px, -2vw);
-            margin-top: max(-22.5px, -1.5vw);
+            width: 5vw;
+            height: 5vw;
+            margin-left: -2vw;
+            margin-top: -1.5vw;
             position: absolute;
             transform: rotate(-20deg);
             /* overflow: hidden; */
         }
         #ui #damage-container .damage-meter .player-photo {
-            width: clamp(52px, 6.47vw, 97px);
-            height: clamp(61px, 7.6vw, 114px);
-            margin-left: max(-8px, -0.53vw);
-            margin-top: max(-27px, -1.8vw);
+            width: 6.47vw;
+            height: 7.6vw;
+            margin-left: -0.53vw;
+            margin-top: -1.8vw;
             transform: rotate(20deg);
             clip-path: polygon(0 0, 0 37%, 26.4% 99.3%, 99.2% 76.7%, 100% 0%);
             /* background: white; */
@@ -68,38 +70,38 @@
             position: absolute;
             width: 100%;
             height: 100%;
-            margin-left: clamp(16px, 2vw, 30px);
-            margin-top: max(-8px, -0.53vw);
+            margin-left: 2vw;
+            margin-top: -0.53vw;
             display: flex;
             align-items: center;
             justify-content: right;
-            font-size: clamp(21px, 2.67vw, 40px);
+            font-size: 2.67vw;
             font-weight: 800;
-            letter-spacing: max(-3px, -0.2vw);
+            letter-spacing: -0.2vw;
             color: white;
-            text-shadow: clamp(2px, 0.27vw, 4px) clamp(2px, 0.27vw, 4px) 0px black;
-            -webkit-text-stroke: clamp(0.5px, 0.067vw, 1px) black;
+            text-shadow: 0.27vw 0.27vw 0px black;
+            -webkit-text-stroke: 0.067vw black;
         }
         .damage-decimal {
-            font-size: clamp(11px, 1.33vw, 20px);
+            font-size: 1.33vw;
             font-weight: 600;
             color: white;
             text-shadow: 1px 1px 0px black;
             -webkit-text-stroke: 0.5px black;
-            margin-top: clamp(11px, 1.4vw, 21px);
-            letter-spacing: max(-1px, -0.067vw);
+            margin-top: 1.4vw;
+            letter-spacing: -0.067vw;
         }
         #ui #damage-container .damage-meter .fighter-name {
             position: absolute;
-            width: clamp(70px, 8.67vw, 130px);
-            bottom: max(-22px, -1.47vw);
-            left: clamp(7px, 0.87vw, 13px);
+            width: 8.67vw;
+            bottom: -1.47vw;
+            left: 0.87vw;
             background: rgba(0, 0, 0, 0.4);
-            font-size: clamp(7px, 0.8vw, 12px);
+            font-size: 0.8vw;
             color: white;
-            padding: clamp(1px, 0.13vw, 2px) clamp(3px, 0.33vw, 5px);
-            padding-left: clamp(17px, 2.13vw, 32px);
-            border-bottom: clamp(1.5px, 0.2vw, 3px) solid;
+            padding: 0.13vw 0.33vw;
+            padding-left: 2.13vw;
+            border-bottom: 0.2vw solid;
             text-align: center;
             text-transform: uppercase;
             font-weight: bold;
