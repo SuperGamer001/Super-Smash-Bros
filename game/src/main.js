@@ -1,6 +1,7 @@
 //////////// IMPORTS //////////////
 import { Fighter } from "./classes/fighter.js";
 import { Platform } from "./classes/platform.js";
+import { RespawnPlatform } from "./classes/respawnplatform.js";
 
 //////////// VARIABLES //////////////
 export const scene = new THREE.Scene();
@@ -40,12 +41,33 @@ const PlayerColors = {
 let cameraTarget = { x: 0, y: 0, z: 10 };
 const cameraLerpSpeed = 0.3; // Smoothing factor (0-1, lower = smoother)
 
+// KO camera focus window
+const KO_FOCUS_DURATION = 2.2; // seconds
+const KO_FOCUS_RADIUS = 10;    // world units around blast
+let koFocusTimer = 0;
+let koFocusPosition = new THREE.Vector3(0, 0, 0);
+
 // Camera boundaries (based on stage area)
 const CAMERA_BOUNDS = {
     minX: -30,
     maxX: 30,
     minY: -20,
     maxY: 20
+};
+
+// Knockout boundaries past the camera bounds (20 units would mean 20 units beyond the camera bounds)
+// (beyond these coordinates, fighters are considered KO'd and respawn)
+const KO_BOUNDS = {
+    minX: 15,
+    maxX: 15,
+    minY: 20,
+    maxY: 20
+}
+
+let gameMode = "stock"; // Game mode (e.g. "stock", "timed", etc.)
+
+const CONFIG = {
+    SD_penalty: 1, // Self-destruct penalty: how many stocks will be lost on a self-destruct?
 };
 
 // Off-screen indicators
@@ -57,6 +79,12 @@ const indicatorCamera = new THREE.OrthographicCamera(
     0.1, 10
 );
 indicatorCamera.position.z = 5;
+
+// KO effect tracking
+const activeParticles = [];          // Blast KO spark/confetti particles
+const activeRespawnPlatforms = [];   // Active respawn platforms
+const respawnTimers = [];            // Fighters waiting to respawn { fighter, timer, duration }
+const RESPAWN_DELAY = 2.0;           // Seconds before a KO'd fighter respawns
 
 //////////// FUNCTIONS //////////////
 
@@ -73,11 +101,10 @@ function setupGame() {
 
     //// Add fighter ////
     fighters[0] = new Fighter("P1", "Steve");
-    fighters[1] = new Fighter("CPU", "Steve", {x: 8, y: 0});
 
     //// CPU Fighters ////
-    for (let i = 0; i < 6; i++) {
-        fighters.push(new Fighter("CPU", "Steve"));
+    for (let i = 0; i < 1; i++) {
+        fighters.push(new Fighter("CPU", "Mario"));
     }
 
     for (let i = 0; i < fighters.length; i++) {
@@ -119,14 +146,34 @@ function updateCamera() {
     // Get bounding box of all fighters
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
+    let hasActiveFighter = false;
 
-    for (let fighter of fighters) {
-        const pos = fighter.object.position;
-        const size = 0.5; // Half-width/height of fighter
-        minX = Math.min(minX, pos.x - size);
-        maxX = Math.max(maxX, pos.x + size);
-        minY = Math.min(minY, pos.y - size);
-        maxY = Math.max(maxY, pos.y + size);
+    // If a KO just happened, keep camera centered on the blast area
+    if (koFocusTimer > 0) {
+        hasActiveFighter = true;
+        minX = koFocusPosition.x - KO_FOCUS_RADIUS;
+        maxX = koFocusPosition.x + KO_FOCUS_RADIUS;
+        minY = koFocusPosition.y - KO_FOCUS_RADIUS;
+        maxY = koFocusPosition.y + KO_FOCUS_RADIUS;
+    } else {
+        for (let fighter of fighters) {
+            if (fighter.isKOd || fighter.eliminated) continue;
+            hasActiveFighter = true;
+            const pos = fighter.object.position;
+            const size = 0.5; // Half-width/height of fighter
+            minX = Math.min(minX, pos.x - size);
+            maxX = Math.max(maxX, pos.x + size);
+            minY = Math.min(minY, pos.y - size);
+            maxY = Math.max(maxY, pos.y + size);
+        }
+    }
+
+    // Fallback: if no active fighters, frame on stage center
+    if (!hasActiveFighter) {
+        const cx = (CAMERA_BOUNDS.minX + CAMERA_BOUNDS.maxX) / 2;
+        const cy = (CAMERA_BOUNDS.minY + CAMERA_BOUNDS.maxY) / 2;
+        minX = cx - 1; maxX = cx + 1;
+        minY = cy - 1; maxY = cy + 1;
     }
 
     // Calculate center and max extent
@@ -258,24 +305,29 @@ function createDamageMeter(fighter) {
     let color = PLAYERS.includes(fighter) ? PlayerColors[fighter.tag] : 0x888888;
     let hash = color.toString(16).padStart(6, '0');
 
+    // Create damage container that holds fighter info
     const container = document.createElement('div');
     container.className = 'damage-meter';
 
+    // The damage percent counter.
     const damageCounter = document.createElement('div');
     damageCounter.className = 'damage-counter';
     container.appendChild(damageCounter);
 
+    // Fighter name label
     const fighterName = document.createElement('div');
     fighterName.className = 'fighter-name';
     fighterName.style.borderBottomColor = `#${hash}`;
     fighterName.textContent = fighter.character;
     container.appendChild(fighterName);
 
+    // Container for fighter photo with colored background matching player color
     const photoContainer = document.createElement('div');
     photoContainer.className = 'photo-container';
     photoContainer.style.backgroundColor = `#${hash}`;
     container.appendChild(photoContainer);
 
+    // Fighter photo with zoom and offset for better framing
     const playerPhoto = document.createElement('div');
     playerPhoto.className = 'player-photo';
     playerPhoto.style.backgroundImage = `url('./src/img/fighter_profile/${fighter.character}.png')`;
@@ -284,6 +336,36 @@ function createDamageMeter(fighter) {
     playerPhoto.style.backgroundPosition = `${fighter.photoOffset.x}% ${fighter.photoOffset.y}%`;
     photoContainer.appendChild(playerPhoto);
 
+    // Series logo with color matching player color
+    const seriesLogo = document.createElement('div');
+    seriesLogo.className = 'series-logo';
+    seriesLogo.style.backgroundColor = `#${hash}`;
+    seriesLogo.style.maskImage = `url('./src/img/series_icon/${fighter.series}.png')`;
+    container.appendChild(seriesLogo);
+
+    // Stock container for showing remaining lives (stocks)
+    // (Maxes out at 5, and counts beyond that show as "headIcon x #")
+    const stockContainer = document.createElement('div');
+    stockContainer.className = 'stock-container';
+    container.appendChild(stockContainer);
+
+    if (fighter.stock <= 5) {
+        for (let i = 0; i < fighter.stock; i++) {
+            const stockIcon = document.createElement('div');
+            stockIcon.className = 'stock';
+            stockIcon.style.backgroundImage = `url('./src/img/stock_icon/${fighter.character}.png')`;
+            stockContainer.appendChild(stockIcon);
+        }
+    } else {
+        const headIcon = document.createElement('div');
+        headIcon.className = 'stock';
+        headIcon.style.backgroundImage = `url('./src/img/stock_icon/${fighter.character}.png')`;
+        stockContainer.appendChild(headIcon);
+        const stockCount = document.createElement('div');
+        stockCount.className = 'stock-count';
+        stockCount.textContent = "x" + fighter.stock;
+        stockContainer.appendChild(stockCount);
+    }
 
     document.getElementById('damage-container').appendChild(container);
 }
@@ -303,6 +385,13 @@ function updateOffscreenIndicators() {
     
     for (let indicator of offscreenIndicators) {
         const fighter = indicator.fighter;
+
+        // Hide indicator for KO'd, eliminated, or respawning fighters
+        if (fighter.isKOd || fighter.eliminated || fighter.respawning) {
+            indicator.group.visible = false;
+            continue;
+        }
+
         const worldPos = fighter.object.position;
         
         // Check if fighter is in camera view
@@ -314,7 +403,7 @@ function updateOffscreenIndicators() {
             indicator.group.visible = true;
 
             // Damage fighter for being off-screen (e.g. 0.1% per frame)
-            fighter.damage += 0.015;
+            fighter.damage += 0.1;
             
             // Project fighter position to screen space
             const screenPos = worldPos.clone().project(camera);
@@ -349,7 +438,326 @@ function updateDamageMeters() {
         // and wrap the decimal and percent sign in a smaller font size for better readability
         const damageText = `${fighter.damage.toFixed(1)}%`;
         const damageCounter = damageMeters[i].getElementsByClassName('damage-counter')[0];
+
+        // Find a color for the damage amount.
+        // 0%-75%: white to yellow
+        // 75%-100%: yellow to orange
+        // 100%-150%: orange to red
+        // 150%-200%: red to dark red
+        // 200%+: stays dark red
+        let color = '#ffffff'; // default white
+
+        if (fighter.damage >= 200) {
+            color = '#880000'; // dark red
+        } else if (fighter.damage >= 150) {
+            const t = (fighter.damage - 150) / 50;
+            color = `#${interpolateColor(0xcc0000, 0x880000, t)}`;
+        } else if (fighter.damage >= 100) {
+            const t = (fighter.damage - 100) / 50;
+            color = `#${interpolateColor(0xff8800, 0xcc0000, t)}`;
+        } else if (fighter.damage >= 75) {
+            const t = (fighter.damage - 75) / 25;
+            color = `#${interpolateColor(0xffff00, 0xff8800, t)}`;
+        } else if (fighter.damage < 75) {
+            const t = fighter.damage / 75;
+            color = `#${interpolateColor(0xffffff, 0xffff00, t)}`;
+        }
+
+        damageCounter.style.color = color;
         damageCounter.innerHTML = damageText.replace(/(\.\d)?%/, '<span class="damage-decimal">$1%</span>');
+
+        const meter = damageMeters[i];
+        meter.classList.remove('high-damage', 'very-high-damage');
+
+        if (fighter.eliminated) {
+            meter.classList.add('eliminated');
+        } else {
+            meter.classList.remove('eliminated');
+            if (fighter.damage >= 200) {
+                meter.classList.add('very-high-damage');
+            } else if (fighter.damage >= 120) {
+                meter.classList.add('high-damage');
+            }
+        }
+
+        // if (fighter.isKOd) {
+        //     meter.classList.add('KOd');
+        // } else {
+        //     meter.classList.remove('KOd');
+        // }
+    }
+}
+
+function interpolateColor(color1, color2, t) {
+    const r1 = (color1 >> 16) & 0xff;
+    const g1 = (color1 >> 8) & 0xff;
+    const b1 = color1 & 0xff;
+    const r2 = (color2 >> 16) & 0xff;
+    const g2 = (color2 >> 8) & 0xff;
+    const b2 = color2 & 0xff;
+    const r = Math.round(r1 + (r2 - r1) * t).toString(16).padStart(2, '0');
+    const g = Math.round(g1 + (g2 - g1) * t).toString(16).padStart(2, '0');
+    const b = Math.round(b1 + (b2 - b1) * t).toString(16).padStart(2, '0');
+    return r + g + b;
+}
+
+// ========== KO / RESPAWN / PARTICLE SYSTEMS ==========
+
+// Create spark and confetti particles for a blast KO
+function createBlastKOEffect(position, color) {
+    const stageCenter = {
+        x: (CAMERA_BOUNDS.minX + CAMERA_BOUNDS.maxX) / 2,
+        y: (CAMERA_BOUNDS.minY + CAMERA_BOUNDS.maxY) / 2
+    };
+
+    const dirX = stageCenter.x - position.x;
+    const dirY = stageCenter.y - position.y;
+    const len = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+    const normX = dirX / len;
+    const normY = dirY / len;
+
+    // --- Sparks: large colored particles aimed at stage center ---
+    for (let i = 0; i < 45; i++) {
+        const size = 3 + Math.random() * 0.8;
+        const geo = new THREE.PlaneGeometry(size, size * 2.5);
+        const mat = new THREE.MeshBasicMaterial({
+            color: color,
+            transparent: true,
+            opacity: 1.0,
+            side: THREE.DoubleSide
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(position.x, position.y, position.z || 0);
+        mesh.rotation.z = Math.random() * Math.PI * 2;
+
+        const speed = 30 + Math.random() * 50;
+        const spread = (Math.random() - 0.5) * 1.5;
+
+        scene.add(mesh);
+        activeParticles.push({
+            mesh,
+            vx: (normX + spread * (Math.random() - 0.5)) * speed,
+            vy: (normY + spread * (Math.random() - 0.5)) * speed,
+            life: 1.0,
+            decay: 0.012 + Math.random() * 0.018,
+            type: 'spark'
+        });
+    }
+
+    // --- Confetti: small colorful rectangles ---
+    const confettiColors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff, 0x00ffff, 0xffffff, color];
+    for (let i = 0; i < 30; i++) {
+        const size = 0.1 + Math.random() * 0.2;
+        const geo = new THREE.PlaneGeometry(size, size * 0.6);
+        const mat = new THREE.MeshBasicMaterial({
+            color: confettiColors[Math.floor(Math.random() * confettiColors.length)],
+            transparent: true,
+            opacity: 1.0,
+            side: THREE.DoubleSide
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(position.x, position.y, position.z || 0);
+
+        const speed = 4 + Math.random() * 12;
+        const spread = (Math.random() - 0.5) * 2;
+
+        scene.add(mesh);
+        activeParticles.push({
+            mesh,
+            vx: (normX + spread) * speed,
+            vy: (normY + spread) * speed + Math.random() * 4,
+            life: 1.0,
+            decay: 0.008 + Math.random() * 0.012,
+            rotSpeed: (Math.random() - 0.5) * 10,
+            type: 'confetti'
+        });
+    }
+}
+
+// Update all active particles (sparks + confetti)
+function updateParticles(dt) {
+    for (let i = activeParticles.length - 1; i >= 0; i--) {
+        const p = activeParticles[i];
+        p.life -= p.decay * dt;
+
+        if (p.life <= 0) {
+            scene.remove(p.mesh);
+            p.mesh.geometry.dispose();
+            p.mesh.material.dispose();
+            activeParticles.splice(i, 1);
+            continue;
+        }
+
+        const frameDt = (1 / 60) * dt;
+        p.mesh.position.x += p.vx * frameDt;
+        p.mesh.position.y += p.vy * frameDt;
+        p.mesh.material.opacity = Math.max(0, p.life);
+
+        if (p.type === 'confetti') {
+            p.vy -= 5 * frameDt; // gravity
+            p.mesh.rotation.z += (p.rotSpeed || 0) * frameDt;
+        }
+        if (p.type === 'spark') {
+            const scale = 0.5 + p.life * 0.5;
+            p.mesh.scale.set(scale, scale, scale);
+        }
+    }
+}
+
+// Handle a blast KO for the given fighter
+function blastKO(fighter) {
+    // Player color for effect (gray for CPU)
+    let color = 0x888888;
+    if (fighter.tag !== "CPU") {
+        color = PlayerColors[fighter.tag] || 0x888888;
+    }
+
+    const pos = fighter.object.position.clone();
+    createBlastKOEffect(pos, color);
+
+    koFocusPosition.copy(pos);
+    koFocusTimer = KO_FOCUS_DURATION;
+
+    // --- Scoring ---
+    const isSD = (fighter.lastHitBy === null || fighter.lastHitBy === fighter);
+
+    if (gameMode === "stock") {
+        fighter.stock -= isSD ? CONFIG.SD_penalty : 1;
+    } else {
+        // Timed / point mode
+        fighter.score -= isSD ? CONFIG.SD_penalty : 1;
+        if (!isSD && fighter.lastHitBy) {
+            fighter.lastHitBy.score += 1;
+        }
+    }
+    fighter.stock = Math.max(0, fighter.stock);
+
+    // --- Set KO state ---
+    fighter.isKOd = true;
+    fighter.lastHitBy = null;
+    scene.remove(fighter.object);
+
+    // --- Damage counter shatter effect ---
+    const idx = fighters.indexOf(fighter);
+    const damageMeters = document.getElementsByClassName('damage-meter');
+    if (damageMeters[idx]) {
+        const counter = damageMeters[idx].getElementsByClassName('damage-counter')[0];
+        if (counter) counter.classList.add('shatter');
+    }
+
+    // --- Update stock display ---
+    updateStockDisplay(fighter, idx);
+
+    // --- Check elimination ---
+    if (gameMode === "stock" && fighter.stock <= 0) {
+        fighter.eliminated = true;
+        if (damageMeters[idx]) {
+            damageMeters[idx].classList.remove('KOd');
+            damageMeters[idx].classList.add('eliminated');
+        }
+    } else {
+        // Queue respawn
+        respawnTimers.push({ fighter, timer: 0, duration: RESPAWN_DELAY });
+    }
+}
+
+// Respawn a fighter after KO delay
+function respawnFighter(fighter) {
+    fighter.isKOd = false;
+    fighter.damage = 0;
+    fighter.respawning = true;
+    fighter.intangible = true;
+    fighter.velocity = { x: 0, y: 0, z: 0 };
+
+    // Add fighter back to scene
+    scene.add(fighter.object);
+    fighter.object.visible = true;
+
+    // Create respawn platform
+    const platform = new RespawnPlatform(fighter, scene, camera, CAMERA_BOUNDS);
+    fighter.respawnPlatform = platform;
+    activeRespawnPlatforms.push(platform);
+
+    // Reappear damage counter
+    const idx = fighters.indexOf(fighter);
+    const damageMeters = document.getElementsByClassName('damage-meter');
+    if (damageMeters[idx]) {
+        damageMeters[idx].classList.remove('KOd');
+        const counter = damageMeters[idx].getElementsByClassName('damage-counter')[0];
+        if (counter) {
+            counter.classList.remove('shatter');
+            counter.classList.add('reappear');
+            setTimeout(() => counter.classList.remove('reappear'), 400);
+        }
+    }
+}
+
+// Refresh the stock icon display for a fighter
+function updateStockDisplay(fighter, idx) {
+    const damageMeters = document.getElementsByClassName('damage-meter');
+    if (!damageMeters[idx]) return;
+
+    const stockContainer = damageMeters[idx].getElementsByClassName('stock-container')[0];
+    if (!stockContainer) return;
+
+    stockContainer.innerHTML = '';
+    if (fighter.stock <= 0) return;
+
+    if (fighter.stock <= 5) {
+        for (let i = 0; i < fighter.stock; i++) {
+            const stockIcon = document.createElement('div');
+            stockIcon.className = 'stock';
+            stockIcon.style.backgroundImage = `url('./src/img/stock_icon/${fighter.character}.png')`;
+            stockContainer.appendChild(stockIcon);
+        }
+    } else {
+        const headIcon = document.createElement('div');
+        headIcon.className = 'stock';
+        headIcon.style.backgroundImage = `url('./src/img/stock_icon/${fighter.character}.png')`;
+        stockContainer.appendChild(headIcon);
+        const stockCount = document.createElement('div');
+        stockCount.className = 'stock-count';
+        stockCount.textContent = 'x' + fighter.stock;
+        stockContainer.appendChild(stockCount);
+    }
+}
+
+// Check all fighters against KO boundaries
+function checkKOBounds() {
+    for (let i = 0; i < fighters.length; i++) {
+        const fighter = fighters[i];
+        if (fighter.isKOd || fighter.eliminated || fighter.respawning) continue;
+
+        const pos = fighter.object.position;
+        if (pos.x < CAMERA_BOUNDS.minX - KO_BOUNDS.minX ||
+            pos.x > CAMERA_BOUNDS.maxX + KO_BOUNDS.maxX ||
+            pos.y < CAMERA_BOUNDS.minY - KO_BOUNDS.minY ||
+            pos.y > CAMERA_BOUNDS.maxY + KO_BOUNDS.maxY) {
+            blastKO(fighter);
+        }
+    }
+}
+
+// Update respawn timers — spawn fighters after delay
+function updateRespawnTimers(dt) {
+    for (let i = respawnTimers.length - 1; i >= 0; i--) {
+        const rt = respawnTimers[i];
+        rt.timer += (1 / 60) * dt;
+        if (rt.timer >= rt.duration) {
+            respawnFighter(rt.fighter);
+            respawnTimers.splice(i, 1);
+        }
+    }
+}
+
+// Update all active respawn platforms
+function updateRespawnPlatforms(dt) {
+    for (let i = activeRespawnPlatforms.length - 1; i >= 0; i--) {
+        const platform = activeRespawnPlatforms[i];
+        platform.update(dt);
+        if (platform.removed) {
+            activeRespawnPlatforms.splice(i, 1);
+        }
     }
 }
 
@@ -363,45 +771,62 @@ function animate(currentTime = 0) {
     const dt = deltaSeconds * 60;
     lastTime = currentTime;
 
-    let me = PLAYERS[0];
-
-    // Jump (instant impulse — not scaled by dt)
-    if (KEY["W"] && !KEY_PREV["W"]) {
-        if (me.isGrounded) {
-            me.isGrounded = false;
-            me.velocity.y = me.jumpHeight;
-        } else if (me.canMidairJump) {
-            me.hasMidairJumped++;
-            me.velocity.y = me.midairJumpHeight;
-            if (me.hasMidairJumped >= me.midairJumps) {
-                me.canMidairJump = false;
-            }
-        }
+    if (koFocusTimer > 0) {
+        koFocusTimer = Math.max(0, koFocusTimer - deltaSeconds);
     }
 
-    // Walking left and right with acceleration
-    const isPressingA = !!KEY["A"];
-    const isPressingD = !!KEY["D"];
+    let me = PLAYERS[0];
 
-    if (isPressingA || isPressingD) {
-        // Most recently pressed key takes priority
-        const timeA = KEY_PRESS_TIME["A"] ?? 0;
-        const timeD = KEY_PRESS_TIME["D"] ?? 0;
+    // --- Respawn platform input check ---
+    // If on a stopped respawn platform, any action triggers removal
+    if (me && !me.isKOd && !me.eliminated && me.frameStun <= 0) {
+        const onStopped = me.respawnPlatform && me.respawnPlatform.isStopped && !me.respawnPlatform.removing;
+        const onDescending = me.respawning && me.respawnPlatform && me.respawnPlatform.isDescending;
 
-        const targetVelocity = timeA > timeD ? -me.speed : me.speed;
+        if (onStopped) {
+            if (KEY["W"] || KEY["A"] || KEY["D"] || KEY["S"]) {
+                me.respawnPlatform.triggerRemoval();
+            }
+        } else if (!onDescending && !me.respawning) {
+            // Jump (instant impulse — not scaled by dt)
+            if (KEY["W"] && !KEY_PREV["W"]) {
+                if (me.isGrounded) {
+                    me.isGrounded = false;
+                    me.velocity.y = me.jumpHeight;
+                } else if (me.canMidairJump) {
+                    me.hasMidairJumped++;
+                    me.velocity.y = me.midairJumpHeight;
+                    if (me.hasMidairJumped >= me.midairJumps) {
+                        me.canMidairJump = false;
+                    }
+                }
+            }
 
-        // Accelerate towards target velocity (scaled by dt)
-        if (me.velocity.x < targetVelocity) {
-            me.velocity.x = Math.min(me.velocity.x + me.acceleration * dt, targetVelocity);
-        } else if (me.velocity.x > targetVelocity) {
-            me.velocity.x = Math.max(me.velocity.x - me.acceleration * dt, targetVelocity);
-        }
-    } else {
-        // Apply traction (deceleration) — frame-rate independent via pow
-        if (Math.abs(me.velocity.x) > 0.01) {
-            me.velocity.x *= Math.pow(1 - (me.traction / 5), dt);
-        } else {
-            me.velocity.x = 0;
+            // Walking left and right with acceleration
+            const isPressingA = !!KEY["A"];
+            const isPressingD = !!KEY["D"];
+
+            if (isPressingA || isPressingD) {
+                // Most recently pressed key takes priority
+                const timeA = KEY_PRESS_TIME["A"] ?? 0;
+                const timeD = KEY_PRESS_TIME["D"] ?? 0;
+
+                const targetVelocity = timeA > timeD ? -me.speed : me.speed;
+
+                // Accelerate towards target velocity (scaled by dt)
+                if (me.velocity.x < targetVelocity) {
+                    me.velocity.x = Math.min(me.velocity.x + me.acceleration * dt, targetVelocity);
+                } else if (me.velocity.x > targetVelocity) {
+                    me.velocity.x = Math.max(me.velocity.x - me.acceleration * dt, targetVelocity);
+                }
+            } else {
+                // Apply traction (deceleration) — frame-rate independent via pow
+                if (Math.abs(me.velocity.x) > 0.01) {
+                    me.velocity.x *= Math.pow(1 - (me.traction / 5), dt);
+                } else {
+                    me.velocity.x = 0;
+                }
+            }
         }
     }
 
@@ -413,6 +838,12 @@ function animate(currentTime = 0) {
     for (let i = 0; i < fighters.length; i++) {
         fighters[i].update(dt);
     }
+
+    // --- KO / Respawn / Particle systems ---
+    checkKOBounds();
+    updateRespawnTimers(dt);
+    updateRespawnPlatforms(dt);
+    updateParticles(dt);
 
     updateCamera();
     updateOffscreenIndicators();

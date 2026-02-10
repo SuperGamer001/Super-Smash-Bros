@@ -7,11 +7,12 @@ export class Fighter {
 
     // Fighter stats
     damage = 0;                   // Percentage damage accumulated
-    stock = Infinity;             // Number of lives (stocks) remaining (infinite for timed battles)
+    stock = 6;                    // Number of lives (stocks) remaining (infinite for timed battles)
+    score = 0;                    // Score (for score-based modes like timed battles)
     speed = 1.0;                  // Max walk speed
     acceleration = 0.15;          // How quickly the character accelerates
     jumpHeight = 2.5;             // Initial jump height
-    midairJumpHeight = 2.3;         // Midair jump height
+    midairJumpHeight = 2.3;       // Midair jump height
     midairJumps = 1;              // Number of midair jumps
     gravity = 5.0;                // Gravity strength
     maxFallSpeed = 8.0;           // Maximum fall speed
@@ -19,8 +20,8 @@ export class Fighter {
     
     // character info
     tag = "CPU";                  // CPU fighter or player (P1, P2, etc.)
-    character = "Steve";          // Fighter used (e.g. Mario, Link, etc.)
-    series = "Minecraft";         // Series the fighter belongs to (e.g. Super Mario, Legend of Zelda, etc.)
+    character = "Mario";          // Fighter used (e.g. Mario, Link, etc.)
+    series = "Smash Bros";         // Series the fighter belongs to (e.g. Super Mario, Legend of Zelda, etc.)
     photoZoom = 180;              // Zoom level for character photo in damage meter (if needed)
     photoOffset = { x: 92, y: 0 };// Offset for character photo in damage meter (if needed)
 
@@ -37,6 +38,15 @@ export class Fighter {
         y: 0.0,
         z: 0.0
     }
+
+    // KO and respawn state
+    isKOd = false;                // True while KO'd and waiting to respawn
+    respawning = false;           // True while on respawn platform (prevents magnifying glass)
+    intangible = false;           // True during respawn (attacks pass through)
+    frameStun = 0;                // Frames to freeze (for respawn platform removal)
+    eliminated = false;           // True when all stocks are gone
+    lastHitBy = null;             // Reference to the last fighter who landed a hit
+    respawnPlatform = null;       // Reference to active respawn platform
 
     
     constructor(tag = "CPU", character = "Steve", position = {x: -8, y: 0}) {
@@ -56,9 +66,34 @@ export class Fighter {
         this.object.add(outline);
         this.outline = outline;
 
+        if (this.character === "Mario") {
+            this.series = "Mario";
+            this.photoZoom = 220;
+            this.photoOffset = { x: 5, y: 1 };
+        } else if (this.character === "Steve") {
+            this.series = "Minecraft";
+            this.photoZoom = 180;
+            this.photoOffset = { x: 92, y: 0 };
+        }
     }
 
     update(dt = 1) {
+        // Don't update if KO'd or eliminated
+        if (this.isKOd || this.eliminated) return;
+
+        // Handle frame stun (freeze frames for respawn platform removal)
+        if (this.frameStun > 0) {
+            this.frameStun--;
+            if (this.frameStun === 0 && this.respawning) {
+                this.respawning = false;
+                this.intangible = false;
+            }
+            return;
+        }
+
+        // If respawning on platform, platform handles position
+        if (this.respawning && this.respawnPlatform) return;
+
         // Apply gravity if not grounded (scaled by dt)
         if (!this.isGrounded) {
             this.velocity.y -= this.gravity * 0.02 * dt;
