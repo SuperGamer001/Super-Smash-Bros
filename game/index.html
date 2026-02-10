@@ -171,6 +171,11 @@
             animation: damageShatter 0.4s ease-out forwards;
             pointer-events: none;
         }
+        /* individual shard fragments used by JS shatter (positioned inside .damage-meter) */
+        .damage-shard {
+            will-change: transform, opacity, left, top;
+            image-rendering: pixelated;
+        }
         @keyframes damageShatter {
             0%   { transform: scale(1); opacity: 1; filter: blur(0); }
             30%  { transform: scale(1.8) rotate(5deg); opacity: 0.8; filter: blur(0); }

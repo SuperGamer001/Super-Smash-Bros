@@ -82,6 +82,7 @@ indicatorCamera.position.z = 5;
 
 // KO effect tracking
 const activeParticles = [];          // Blast KO spark/confetti particles
+const activeShards = [];             // Damage counter shards on KO
 const activeRespawnPlatforms = [];   // Active respawn platforms
 const respawnTimers = [];            // Fighters waiting to respawn { fighter, timer, duration }
 const RESPAWN_DELAY = 2.0;           // Seconds before a KO'd fighter respawns
@@ -574,6 +575,157 @@ function createBlastKOEffect(position, color) {
     }
 }
 
+// Create shatter effect for a damage counter at a given fighter index
+function shatterDamageCounter(idx) {
+    const damageMeters = document.getElementsByClassName('damage-meter');
+    const meter = damageMeters[idx];
+    if (!meter) return;
+    const counter = meter.getElementsByClassName('damage-counter')[0];
+    if (!counter) return;
+
+    // Render the counter text to an offscreen canvas
+    const rect = counter.getBoundingClientRect();
+    const scale = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(rect.width * scale));
+    const h = Math.max(1, Math.round(rect.height * scale));
+
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const ctx = off.getContext('2d');
+
+    // match font styles
+    const style = window.getComputedStyle(counter);
+    const fontSize = parseFloat(style.fontSize) * scale;
+    const fontWeight = style.fontWeight || '800';
+    const fontFamily = style.fontFamily || 'Arial';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right';
+    ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+
+    // draw stroke + fill to emulate CSS stroke
+    const text = counter.textContent || '';
+    // Draw black stroke
+    ctx.lineWidth = Math.ceil(Math.max(1, fontSize * 0.06));
+    ctx.strokeStyle = 'black';
+    ctx.strokeText(text, w - 2 * scale, h / 2);
+    // Fill with computed color
+    ctx.fillStyle = style.color || '#ffffff';
+    ctx.fillText(text, w - 2 * scale, h / 2);
+
+    // Split into grid of shards
+    const cols = 8;
+    const rows = 4;
+    const shardW = Math.ceil(w / cols);
+    const shardH = Math.ceil(h / rows);
+
+    // Ensure parent is relatively positioned (damage-meter is relative)
+    meter.style.position = meter.style.position || 'relative';
+
+    for (let ry = 0; ry < rows; ry++) {
+        for (let cx = 0; cx < cols; cx++) {
+            const sx = cx * shardW;
+            const sy = ry * shardH;
+            const sw = Math.min(shardW, w - sx);
+            const sh = Math.min(shardH, h - sy);
+            if (sw <= 0 || sh <= 0) continue;
+
+            const shardCanvas = document.createElement('canvas');
+            shardCanvas.width = sw;
+            shardCanvas.height = sh;
+            const sctx = shardCanvas.getContext('2d');
+            sctx.drawImage(off, sx, sy, sw, sh, 0, 0, sw, sh);
+
+            const shard = document.createElement('div');
+            shard.className = 'damage-shard';
+            shard.style.position = 'absolute';
+            // position relative to counter inside meter
+            const counterRect = counter.getBoundingClientRect();
+            const meterRect = meter.getBoundingClientRect();
+            const left = (counterRect.left - meterRect.left) + (sx / scale);
+            const top = (counterRect.top - meterRect.top) + (sy / scale);
+            shard.style.left = `${left}px`;
+            shard.style.top = `${top}px`;
+            shard.style.width = `${sw / scale}px`;
+            shard.style.height = `${sh / scale}px`;
+            shard.style.overflow = 'hidden';
+            shard.style.pointerEvents = 'none';
+            shard.style.zIndex = 20;
+
+            // place the fragment canvas inside the div and scale down for devicePixelRatio
+            shardCanvas.style.width = `${sw / scale}px`;
+            shardCanvas.style.height = `${sh / scale}px`;
+            shardCanvas.style.display = 'block';
+            shard.appendChild(shardCanvas);
+
+            meter.appendChild(shard);
+
+            // physics properties
+            const vx = (Math.random() - 0.5) * 400; // px/sec
+            const vy = -200 - Math.random() * 400;   // px/sec (upwards)
+            const angular = (Math.random() - 0.5) * 8; // rad/sec
+
+            activeShards.push({
+                el: shard,
+                vx,
+                vy,
+                ax: 0,
+                ay: 800, // gravity px/s^2
+                ang: 0,
+                aang: angular,
+                life: 1.2 + Math.random() * 0.6,
+                ownerIdx: idx
+            });
+        }
+    }
+
+    // hide original counter text so it looks fully shattered
+    counter.style.visibility = 'hidden';
+}
+
+// Remove any shards belonging to a fighter index
+function clearShardsFor(idx) {
+    for (let i = activeShards.length - 1; i >= 0; i--) {
+        if (activeShards[i].ownerIdx === idx) {
+            const el = activeShards[i].el;
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+            activeShards.splice(i, 1);
+        }
+    }
+    const damageMeters = document.getElementsByClassName('damage-meter');
+    if (damageMeters[idx]) {
+        const counter = damageMeters[idx].getElementsByClassName('damage-counter')[0];
+        if (counter) counter.style.visibility = '';
+    }
+}
+
+// Update shard physics and lifetime
+function updateShards(dt) {
+    if (activeShards.length === 0) return;
+    const frameDt = (1 / 60) * dt;
+    for (let i = activeShards.length - 1; i >= 0; i--) {
+        const s = activeShards[i];
+        s.vx += s.ax * frameDt;
+        s.vy += s.ay * frameDt;
+        s.ang += s.aang * frameDt;
+
+        const el = s.el;
+        const left = parseFloat(el.style.left || 0);
+        const top = parseFloat(el.style.top || 0);
+        el.style.left = `${left + s.vx * frameDt}px`;
+        el.style.top = `${top + s.vy * frameDt}px`;
+        el.style.transform = `rotate(${s.ang}rad)`;
+
+        s.life -= (1 / 60) * dt;
+        const opacity = Math.max(0, s.life / 1.6);
+        el.style.opacity = opacity;
+
+        if (s.life <= 0) {
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+            activeShards.splice(i, 1);
+        }
+    }
+}
+
 // Update all active particles (sparks + confetti)
 function updateParticles(dt) {
     for (let i = activeParticles.length - 1; i >= 0; i--) {
@@ -639,11 +791,8 @@ function blastKO(fighter) {
 
     // --- Damage counter shatter effect ---
     const idx = fighters.indexOf(fighter);
-    const damageMeters = document.getElementsByClassName('damage-meter');
-    if (damageMeters[idx]) {
-        const counter = damageMeters[idx].getElementsByClassName('damage-counter')[0];
-        if (counter) counter.classList.add('shatter');
-    }
+    // create physics-driven shard pieces from the counter text
+    shatterDamageCounter(idx);
 
     // --- Update stock display ---
     updateStockDisplay(fighter, idx);
@@ -683,9 +832,10 @@ function respawnFighter(fighter) {
     const damageMeters = document.getElementsByClassName('damage-meter');
     if (damageMeters[idx]) {
         damageMeters[idx].classList.remove('KOd');
+        // remove any live shards and restore counter
+        clearShardsFor(idx);
         const counter = damageMeters[idx].getElementsByClassName('damage-counter')[0];
         if (counter) {
-            counter.classList.remove('shatter');
             counter.classList.add('reappear');
             setTimeout(() => counter.classList.remove('reappear'), 400);
         }
@@ -844,6 +994,7 @@ function animate(currentTime = 0) {
     updateRespawnTimers(dt);
     updateRespawnPlatforms(dt);
     updateParticles(dt);
+    updateShards(dt);
 
     updateCamera();
     updateOffscreenIndicators();
